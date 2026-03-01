@@ -35,12 +35,20 @@ async def handle_message(update: Update, context):
 
     try:
         result = await run_agent(prompt)
-        await status_msg.edit_text(
-            f"✅ Готово!\n\n"
-            f"📝 {result['commit_message']}\n\n"
-            f"📁 Изменено файлов: {result['files_changed']}\n"
-            f"🔗 {result['repo_url']}"
-        )
+        if result['files_changed'] == 0:
+            await status_msg.edit_text(
+                "⚠️ Агент не внёс изменений.\n\n"
+                "Попробуй переформулировать задачу точнее, например:\n"
+                "• «Добавь в файл X функцию Y»\n"
+                "• «Измени в файле X строку Y на Z»"
+            )
+        else:
+            await status_msg.edit_text(
+                f"✅ Готово!\n\n"
+                f"📝 {result['commit_message']}\n\n"
+                f"📁 Изменено файлов: {result['files_changed']}\n"
+                f"🔗 {result['repo_url']}"
+            )
     except Exception as e:
         logger.error(f"Ошибка агента: {e}")
         await status_msg.edit_text(f"❌ Ошибка: {str(e)}")
