@@ -5,6 +5,7 @@ import httpx
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
+from mcp.server.models import InitializationOptions
 
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 OWNER = os.getenv("GITHUB_OWNER")
@@ -228,5 +229,10 @@ async def delete_file(path: str, commit_message: str) -> str:
         return f"Ошибка при удалении: {resp.text}"
 
 
+async def main():
+    async with stdio_server() as (read_stream, write_stream):
+        await server.run(read_stream, write_stream, server.create_initialization_options())
+
+
 if __name__ == "__main__":
-    asyncio.run(stdio_server(server))
+    asyncio.run(main())
