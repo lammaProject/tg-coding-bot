@@ -17,6 +17,12 @@ GITHUB_REPO = os.getenv("GITHUB_REPO")
 MAX_ITERATIONS = 10       # максимум итераций агента
 AGENT_TIMEOUT = 120       # таймаут всего агента в секундах
 
+# Модели в порядке приоритета — fallback при 429/rate limit
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",   # основная: умнее, 100k TPD
+    "llama-3.1-8b-instant",      # fallback: быстрее, 500k TPD
+]
+
 SYSTEM_PROMPT = """Ты senior Python/TypeScript разработчик.
 
 Когда получаешь задачу:
@@ -86,21 +92,30 @@ async def _run_agent_inner(prompt: str) -> dict:
             commit_message = "chore: update code"
             files_changed = 0
             iteration = 0
+            current_model_idx = 0  # начинаем с лучшей модели
 
             while iteration < MAX_ITERATIONS:
                 iteration += 1
-                logger.info(f"Итерация {iteration}/{MAX_ITERATIONS}")
+                model = GROQ_MODELS[current_model_idx]
+                logger.info(f"Итерация {iteration}/{MAX_ITERATIONS} [{model}]")
 
                 try:
                     response = await client.chat.completions.create(
-                        model="llama-3.3-70b-versatile",
-                        max_tokens=8096,
+                        model=model,
+                        max_tokens=4096,
                         tools=groq_tools,
                         tool_choice="auto",
                         messages=messages,
                     )
                 except APIStatusError as e:
                     logger.error(f"Groq API error {e.status_code}: {e.response.text}")
+                    # При rate limit — пробуем следующую модель
+                    if e.status_code == 429 and current_model_idx + 1 < len(GROQ_MODELS):
+                        current_model_idx += 1
+                        next_model = GROQ_MODELS[current_model_idx]
+                        logger.warning(f"Rate limit, переключаюсь на {next_model}")
+                        iteration -= 1  # не считать эту итерацию
+                        continue
                     raise Exception(f"Groq вернул ошибку {e.status_code}: {e.message}")
 
                 choice = response.choices[0]
