@@ -57,8 +57,7 @@ async def lifespan(app: FastAPI):
     await bot_app.bot.set_webhook(f"{WEBHOOK_URL}/webhook")
     logger.info(f"Webhook установлен: {WEBHOOK_URL}/webhook")
     yield
-    # Shutdown — удаляем webhook
-    await bot_app.bot.delete_webhook()
+    # Shutdown — НЕ удаляем webhook, чтобы он восстанавливался после sleep/redeploy
     await bot_app.shutdown()
 
 

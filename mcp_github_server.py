@@ -10,6 +10,7 @@ from mcp.server.models import InitializationOptions
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 OWNER = os.getenv("GITHUB_OWNER")
 REPO = os.getenv("GITHUB_REPO")
+DEFAULT_BRANCH = os.getenv("GITHUB_BRANCH", "master")
 
 server = Server("github-coder")
 
@@ -112,7 +113,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     return [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
 
 
-async def push_files(files: list, commit_message: str, branch: str = "main") -> str:
+async def push_files(files: list, commit_message: str, branch: str = None) -> str:
+    if not branch:
+        branch = DEFAULT_BRANCH
     headers = {
         "Authorization": f"token {GITHUB_TOKEN}",
         "Accept": "application/vnd.github.v3+json"
