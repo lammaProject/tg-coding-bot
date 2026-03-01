@@ -3,7 +3,7 @@ import sys
 import json
 import asyncio
 import logging
-from groq import AsyncGroq
+from groq import AsyncGroq, APIStatusError
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
@@ -91,13 +91,17 @@ async def _run_agent_inner(prompt: str) -> dict:
                 iteration += 1
                 logger.info(f"Итерация {iteration}/{MAX_ITERATIONS}")
 
-                response = await client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    max_tokens=8096,
-                    tools=groq_tools,
-                    tool_choice="auto",
-                    messages=messages,
-                )
+                try:
+                    response = await client.chat.completions.create(
+                        model="llama-3.3-70b-versatile",
+                        max_tokens=8096,
+                        tools=groq_tools,
+                        tool_choice="auto",
+                        messages=messages,
+                    )
+                except APIStatusError as e:
+                    logger.error(f"Groq API error {e.status_code}: {e.response.text}")
+                    raise Exception(f"Groq вернул ошибку {e.status_code}: {e.message}")
 
                 choice = response.choices[0]
                 finish_reason = choice.finish_reason

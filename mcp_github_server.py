@@ -29,20 +29,19 @@ async def list_tools() -> list[Tool]:
                         "items": {
                             "type": "object",
                             "properties": {
-                                "path": {"type": "string", "description": "Путь к файлу в репозитории"},
-                                "content": {"type": "string", "description": "Содержимое файла"}
+                                "path": {"type": "string"},
+                                "content": {"type": "string"}
                             },
                             "required": ["path", "content"]
                         }
                     },
                     "commit_message": {
                         "type": "string",
-                        "description": "Сообщение коммита"
+                        "description": "Сообщение коммита в формате conventional commits"
                     },
                     "branch": {
                         "type": "string",
-                        "description": "Ветка для пуша",
-                        "default": "main"
+                        "description": "Ветка для пуша (по умолчанию main)"
                     }
                 },
                 "required": ["files", "commit_message"]
@@ -61,16 +60,16 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_files",
-            description="Получить список файлов в директории репозитория",
+            description="Получить список файлов в директории репозитория. Передай пустую строку для корня.",
             inputSchema={
                 "type": "object",
                 "properties": {
                     "directory": {
                         "type": "string",
-                        "description": "Путь к директории (пустая строка = корень)",
-                        "default": ""
+                        "description": "Путь к директории, пустая строка для корня репозитория"
                     }
-                }
+                },
+                "required": ["directory"]
             }
         ),
         Tool(
