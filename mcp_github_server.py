@@ -1,0 +1,232 @@
+import asyncio
+import base64
+import os
+import httpx
+from mcp.server import Server
+from mcp.server.stdio import stdio_server
+from mcp.types import Tool, TextContent
+
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+OWNER = os.getenv("GITHUB_OWNER")
+REPO = os.getenv("GITHUB_REPO")
+
+server = Server("github-coder")
+
+
+@server.list_tools()
+async def list_tools() -> list[Tool]:
+    return [
+        Tool(
+            name="push_files",
+            description="Создать или обновить файлы в GitHub репозитории и запушить коммит",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "files": {
+                        "type": "array",
+                        "description": "Список файлов для пуша",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "path": {"type": "string", "description": "Путь к файлу в репозитории"},
+                                "content": {"type": "string", "description": "Содержимое файла"}
+                            },
+                            "required": ["path", "content"]
+                        }
+                    },
+                    "commit_message": {
+                        "type": "string",
+                        "description": "Сообщение коммита"
+                    },
+                    "branch": {
+                        "type": "string",
+                        "description": "Ветка для пуша",
+                        "default": "main"
+                    }
+                },
+                "required": ["files", "commit_message"]
+            }
+        ),
+        Tool(
+            name="read_file",
+            description="Прочитать содержимое файла из репозитория",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Путь к файлу"}
+                },
+                "required": ["path"]
+            }
+        ),
+        Tool(
+            name="list_files",
+            description="Получить список файлов в директории репозитория",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "Путь к директории (пустая строка = корень)",
+                        "default": ""
+                    }
+                }
+            }
+        ),
+        Tool(
+            name="delete_file",
+            description="Удалить файл из репозитория",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Путь к файлу"},
+                    "commit_message": {"type": "string", "description": "Сообщение коммита"}
+                },
+                "required": ["path", "commit_message"]
+            }
+        )
+    ]
+
+
+@server.call_tool()
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    if name == "push_files":
+        result = await push_files(
+            arguments["files"],
+            arguments["commit_message"],
+            arguments.get("branch", "main")
+        )
+        return [TextContent(type="text", text=result)]
+
+    elif name == "read_file":
+        content = await read_file(arguments["path"])
+        return [TextContent(type="text", text=content)]
+
+    elif name == "list_files":
+        files = await list_files(arguments.get("directory", ""))
+        return [TextContent(type="text", text=files)]
+
+    elif name == "delete_file":
+        result = await delete_file(arguments["path"], arguments["commit_message"])
+        return [TextContent(type="text", text=result)]
+
+    return [TextContent(type="text", text=f"Неизвестный инструмент: {name}")]
+
+
+async def push_files(files: list, commit_message: str, branch: str = "main") -> str:
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+
+    pushed = []
+    async with httpx.AsyncClient() as client:
+        for file in files:
+            path = file["path"]
+            content = file["content"]
+
+            # Проверяем существует ли файл (нужен sha для обновления)
+            r = await client.get(
+                f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}",
+                headers=headers,
+                params={"ref": branch}
+            )
+            sha = r.json().get("sha") if r.status_code == 200 else None
+
+            body = {
+                "message": commit_message,
+                "content": base64.b64encode(content.encode()).decode(),
+                "branch": branch
+            }
+            if sha:
+                body["sha"] = sha
+
+            resp = await client.put(
+                f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}",
+                headers=headers,
+                json=body
+            )
+
+            if resp.status_code in (200, 201):
+                pushed.append(path)
+            else:
+                return f"Ошибка при пуше {path}: {resp.text}"
+
+    return (
+        f"Успешно запушено {len(pushed)} файлов:\n"
+        + "\n".join(f"  • {p}" for p in pushed)
+        + f"\n\nhttps://github.com/{OWNER}/{REPO}"
+    )
+
+
+async def read_file(path: str) -> str:
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}",
+            headers=headers
+        )
+        if r.status_code == 404:
+            return f"Файл не найден: {path}"
+        if r.status_code != 200:
+            return f"Ошибка: {r.text}"
+
+        data = r.json()
+        content = base64.b64decode(data["content"]).decode("utf-8")
+        return content
+
+
+async def list_files(directory: str = "") -> str:
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    async with httpx.AsyncClient() as client:
+        url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{directory}"
+        r = await client.get(url, headers=headers)
+
+        if r.status_code == 404:
+            return f"Директория не найдена: {directory}"
+        if r.status_code != 200:
+            return f"Ошибка: {r.text}"
+
+        items = r.json()
+        result = []
+        for item in items:
+            icon = "📁" if item["type"] == "dir" else "📄"
+            result.append(f"{icon} {item['path']}")
+
+        return "\n".join(result) if result else "Директория пуста"
+
+
+async def delete_file(path: str, commit_message: str) -> str:
+    headers = {
+        "Authorization": f"token {GITHUB_TOKEN}",
+        "Accept": "application/vnd.github.v3+json"
+    }
+    async with httpx.AsyncClient() as client:
+        # Получаем sha файла
+        r = await client.get(
+            f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}",
+            headers=headers
+        )
+        if r.status_code == 404:
+            return f"Файл не найден: {path}"
+
+        sha = r.json()["sha"]
+
+        resp = await client.delete(
+            f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{path}",
+            headers=headers,
+            json={"message": commit_message, "sha": sha}
+        )
+
+        if resp.status_code == 200:
+            return f"Файл удалён: {path}"
+        return f"Ошибка при удалении: {resp.text}"
+
+
+if __name__ == "__main__":
+    asyncio.run(stdio_server(server))
