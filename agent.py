@@ -18,7 +18,14 @@ MAX_ITERATIONS = 6        # максимум итераций агента
 AGENT_TIMEOUT = 120       # таймаут всего агента в секундах
 TOOL_RESULT_LIMIT = 3000  # обрезаем длинные ответы инструментов
 
-MODEL = "llama-3.3-70b-versatile"
+MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-70b-versatile",
+    "llama3-70b-8192",
+    "mixtral-8x7b-32768",
+    "gemma2-9b-it",
+    "llama3-8b-8192",
+]
 
 SYSTEM_PROMPT = """Ты senior fullstack разработчик. Работаешь с GitHub репозиторием через инструменты.
 
@@ -90,14 +97,17 @@ async def _run_agent_inner(prompt: str) -> dict:
             commit_message = "chore: update code"
             files_changed = 0
             iteration = 0
+            current_model_index = 0
 
             while iteration < MAX_ITERATIONS:
                 iteration += 1
                 logger.info(f"Итерация {iteration}/{MAX_ITERATIONS}")
 
                 try:
+                    model = MODELS[current_model_index]
+                    logger.info(f"Используем модель: {model}")
                     response = await client.chat.completions.create(
-                        model=MODEL,
+                        model=model,
                         max_tokens=4096,
                         tools=groq_tools,
                         tool_choice="auto",
@@ -106,7 +116,14 @@ async def _run_agent_inner(prompt: str) -> dict:
                 except APIStatusError as e:
                     logger.error(f"Groq API error {e.status_code}: {e.response.text}")
                     if e.status_code == 429:
-                        raise Exception("Groq rate limit исчерпан. Подожди несколько минут и попробуй снова.")
+                        # Пробуем следующую модель
+                        current_model_index += 1
+                        if current_model_index < len(MODELS):
+                            next_model = MODELS[current_model_index]
+                            logger.warning(f"Rate limit на {model}, переключаемся на {next_model}")
+                            iteration -= 1  # не считаем эту итерацию
+                            continue
+                        raise Exception("Rate limit исчерпан на всех моделях. Подожди несколько минут.")
                     raise Exception(f"Groq ошибка {e.status_code}: {e.message}")
 
                 choice = response.choices[0]
