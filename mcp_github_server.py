@@ -193,7 +193,7 @@ async def list_files(directory: str = "") -> str:
         if r.status_code == 404:
             return f"Директория не найдена: {directory}"
         if r.status_code != 200:
-            return f"Ошибка: {r.text}"
+            return f"Ошибка {r.status_code}: {r.text}"
 
         items = r.json()
         result = []

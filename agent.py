@@ -42,16 +42,20 @@ SYSTEM_PROMPT = """Ты senior Python/TypeScript разработчик.
 
 
 async def _run_agent_inner(prompt: str) -> dict:
+    # Наследуем всё окружение процесса и добавляем нужные переменные поверх
+    subprocess_env = {**os.environ, **{
+        k: v for k, v in {
+            "GITHUB_TOKEN": GITHUB_TOKEN,
+            "GITHUB_OWNER": GITHUB_OWNER,
+            "GITHUB_REPO": GITHUB_REPO,
+            "GITHUB_BRANCH": os.getenv("GITHUB_BRANCH", "master"),
+        }.items() if v is not None
+    }}
+
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["mcp_github_server.py"],
-        env={
-            k: v for k, v in {
-                "GITHUB_TOKEN": GITHUB_TOKEN,
-                "GITHUB_OWNER": GITHUB_OWNER,
-                "GITHUB_REPO": GITHUB_REPO,
-            }.items() if v is not None
-        }
+        env=subprocess_env,
     )
 
     async with stdio_client(server_params) as (read, write):
