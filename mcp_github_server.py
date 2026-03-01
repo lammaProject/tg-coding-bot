@@ -42,7 +42,7 @@ async def list_tools() -> list[Tool]:
                     },
                     "branch": {
                         "type": "string",
-                        "description": "Ветка для пуша (по умолчанию main)"
+                        "description": "Ветка для пуша. Не указывай — сервер использует правильную ветку автоматически"
                     }
                 },
                 "required": ["files", "commit_message"]
@@ -61,16 +61,10 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="list_files",
-            description="Получить список файлов в директории репозитория. Передай пустую строку для корня.",
+            description="Получить полное дерево всех файлов репозитория рекурсивно. Вызывай без аргументов.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "directory": {
-                        "type": "string",
-                        "description": "Путь к директории, пустая строка для корня репозитория"
-                    }
-                },
-                "required": ["directory"]
+                "properties": {}
             }
         ),
         Tool(
@@ -94,7 +88,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         result = await push_files(
             arguments["files"],
             arguments["commit_message"],
-            arguments.get("branch", "main")
+            arguments.get("branch") or DEFAULT_BRANCH
         )
         return [TextContent(type="text", text=result)]
 
@@ -103,7 +97,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         return [TextContent(type="text", text=content)]
 
     elif name == "list_files":
-        files = await list_files(arguments.get("directory", ""))
+        files = await list_files()
         return [TextContent(type="text", text=files)]
 
     elif name == "delete_file":
@@ -187,21 +181,20 @@ async def list_files(directory: str = "") -> str:
         "Accept": "application/vnd.github.v3+json"
     }
     async with httpx.AsyncClient() as client:
-        url = f"https://api.github.com/repos/{OWNER}/{REPO}/contents/{directory}"
+        # Используем Git Trees API для рекурсивного списка всех файлов
+        url = f"https://api.github.com/repos/{OWNER}/{REPO}/git/trees/{DEFAULT_BRANCH}?recursive=1"
         r = await client.get(url, headers=headers)
 
-        if r.status_code == 404:
-            return f"Директория не найдена: {directory}"
         if r.status_code != 200:
             return f"Ошибка {r.status_code}: {r.text}"
 
-        items = r.json()
+        items = r.json().get("tree", [])
         result = []
         for item in items:
-            icon = "📁" if item["type"] == "dir" else "📄"
-            result.append(f"{icon} {item['path']}")
+            if item["type"] == "blob":  # только файлы, без деревьев
+                result.append(item["path"])
 
-        return "\n".join(result) if result else "Директория пуста"
+        return "\n".join(result) if result else "Репозиторий пуст"
 
 
 async def delete_file(path: str, commit_message: str) -> str:
