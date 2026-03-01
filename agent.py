@@ -14,30 +14,24 @@ GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
 
-MAX_ITERATIONS = 10       # максимум итераций агента
+MAX_ITERATIONS = 6        # максимум итераций агента
 AGENT_TIMEOUT = 120       # таймаут всего агента в секундах
+TOOL_RESULT_LIMIT = 3000  # обрезаем длинные ответы инструментов
 
-# Модели в порядке приоритета — fallback при 429/rate limit
-GROQ_MODELS = [
-    "llama-3.3-70b-versatile",   # основная: умнее, 100k TPD
-    "llama-3.1-8b-instant",      # fallback: быстрее, 500k TPD
-]
+MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """Ты senior Python/TypeScript разработчик.
+SYSTEM_PROMPT = """Ты senior fullstack разработчик. Работаешь с GitHub репозиторием через инструменты.
 
-Когда получаешь задачу:
-1. Вызови list_files с directory="" чтобы понять структуру проекта. Если получишь ошибку — пропусти этот шаг и сразу пиши код.
-2. Прочитай нужные файлы через read_file перед изменением (если знаешь путь).
-3. Напиши или обнови код.
-4. Запуши через push_files с понятным commit_message.
+Алгоритм:
+1. Вызови list_files() — получишь полное дерево файлов репозитория
+2. Вызови read_file для файлов которые нужно изменить
+3. Вызови push_files — передай ВСЕ изменённые файлы за один вызов
 
 Правила:
-- Пиши чистый, типизированный код
-- commit_message на английском в формате conventional commits (feat/fix/refactor: описание)
-- Если файл не существует — создай его
-- Если нужно изменить несколько файлов — пуши все за один вызов push_files
-- ВАЖНО: не вызывай один и тот же инструмент дважды если он вернул ошибку
-- Максимум 10 итераций — работай быстро и эффективно
+- НЕ указывай branch в push_files — сервер подставит автоматически
+- commit_message на английском, формат: feat/fix/refactor: описание
+- Пиши код в стиле существующего проекта
+- Все файлы пуши одним вызовом push_files
 """
 
 
@@ -96,16 +90,14 @@ async def _run_agent_inner(prompt: str) -> dict:
             commit_message = "chore: update code"
             files_changed = 0
             iteration = 0
-            current_model_idx = 0  # начинаем с лучшей модели
 
             while iteration < MAX_ITERATIONS:
                 iteration += 1
-                model = GROQ_MODELS[current_model_idx]
-                logger.info(f"Итерация {iteration}/{MAX_ITERATIONS} [{model}]")
+                logger.info(f"Итерация {iteration}/{MAX_ITERATIONS}")
 
                 try:
                     response = await client.chat.completions.create(
-                        model=model,
+                        model=MODEL,
                         max_tokens=4096,
                         tools=groq_tools,
                         tool_choice="auto",
@@ -113,14 +105,9 @@ async def _run_agent_inner(prompt: str) -> dict:
                     )
                 except APIStatusError as e:
                     logger.error(f"Groq API error {e.status_code}: {e.response.text}")
-                    # При rate limit — пробуем следующую модель
-                    if e.status_code == 429 and current_model_idx + 1 < len(GROQ_MODELS):
-                        current_model_idx += 1
-                        next_model = GROQ_MODELS[current_model_idx]
-                        logger.warning(f"Rate limit, переключаюсь на {next_model}")
-                        iteration -= 1  # не считать эту итерацию
-                        continue
-                    raise Exception(f"Groq вернул ошибку {e.status_code}: {e.message}")
+                    if e.status_code == 429:
+                        raise Exception("Groq rate limit исчерпан. Подожди несколько минут и попробуй снова.")
+                    raise Exception(f"Groq ошибка {e.status_code}: {e.message}")
 
                 choice = response.choices[0]
                 finish_reason = choice.finish_reason
@@ -164,7 +151,11 @@ async def _run_agent_inner(prompt: str) -> dict:
                             commit_message = args.get("commit_message", commit_message)
                             files_changed += len(args.get("files", []))
 
-                        logger.info(f"Результат {name}: {result_text[:150]}")
+                        # Обрезаем длинные ответы чтобы не раздувать контекст
+                        if len(result_text) > TOOL_RESULT_LIMIT:
+                            result_text = result_text[:TOOL_RESULT_LIMIT] + "\n...(обрезано)"
+
+                        logger.info(f"Результат {name}: {result_text[:200]}")
 
                     except Exception as e:
                         result_text = f"Ошибка: {str(e)}"
