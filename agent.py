@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import asyncio
 import logging
 from groq import AsyncGroq
 from mcp import ClientSession, StdioServerParameters
@@ -11,6 +13,9 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 GITHUB_OWNER = os.getenv("GITHUB_OWNER")
 GITHUB_REPO = os.getenv("GITHUB_REPO")
+
+MAX_ITERATIONS = 10       # максимум итераций агента
+AGENT_TIMEOUT = 120       # таймаут всего агента в секундах
 
 SYSTEM_PROMPT = """Ты senior Python/TypeScript разработчик.
 
@@ -26,19 +31,20 @@ SYSTEM_PROMPT = """Ты senior Python/TypeScript разработчик.
 - commit_message на английском в формате conventional commits
 - Если файл не существует — создай его
 - Если нужно изменить несколько файлов — пуши все за один раз
+- Не делай лишних шагов — максимум 10 итераций
 """
 
 
-async def run_agent(prompt: str) -> dict:
-    """Запускает агента с MCP инструментами и возвращает результат."""
-
+async def _run_agent_inner(prompt: str) -> dict:
     server_params = StdioServerParameters(
         command=sys.executable,
         args=["mcp_github_server.py"],
         env={
-            "GITHUB_TOKEN": GITHUB_TOKEN,
-            "GITHUB_OWNER": GITHUB_OWNER,
-            "GITHUB_REPO": GITHUB_REPO,
+            k: v for k, v in {
+                "GITHUB_TOKEN": GITHUB_TOKEN,
+                "GITHUB_OWNER": GITHUB_OWNER,
+                "GITHUB_REPO": GITHUB_REPO,
+            }.items() if v is not None
         }
     )
 
@@ -46,7 +52,6 @@ async def run_agent(prompt: str) -> dict:
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            # Получаем инструменты от MCP сервера
             tools_result = await session.list_tools()
             tools = [
                 {
@@ -61,13 +66,11 @@ async def run_agent(prompt: str) -> dict:
 
             client = AsyncGroq(api_key=GROQ_API_KEY)
 
-            # Groq использует OpenAI-совместимый формат
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ]
 
-            # Конвертируем MCP tools в формат OpenAI/Groq
             groq_tools = [
                 {
                     "type": "function",
@@ -82,9 +85,12 @@ async def run_agent(prompt: str) -> dict:
 
             commit_message = "chore: update code"
             files_changed = 0
+            iteration = 0
 
-            # Агентный цикл
-            while True:
+            while iteration < MAX_ITERATIONS:
+                iteration += 1
+                logger.info(f"Итерация {iteration}/{MAX_ITERATIONS}")
+
                 response = await client.chat.completions.create(
                     model="llama-3.3-70b-versatile",
                     max_tokens=8096,
@@ -95,13 +101,14 @@ async def run_agent(prompt: str) -> dict:
 
                 choice = response.choices[0]
                 finish_reason = choice.finish_reason
-                logger.info(f"finish_reason: {finish_reason}")
-
                 msg = choice.message
-                messages.append({
-                    "role": "assistant",
-                    "content": msg.content or "",
-                    "tool_calls": [
+
+                logger.info(f"finish_reason: {finish_reason}, tool_calls: {bool(msg.tool_calls)}")
+
+                # Добавляем ответ в историю
+                assistant_msg = {"role": "assistant", "content": msg.content or ""}
+                if msg.tool_calls:
+                    assistant_msg["tool_calls"] = [
                         {
                             "id": tc.id,
                             "type": "function",
@@ -110,36 +117,35 @@ async def run_agent(prompt: str) -> dict:
                                 "arguments": tc.function.arguments
                             }
                         }
-                        for tc in (msg.tool_calls or [])
-                    ] or None
-                })
+                        for tc in msg.tool_calls
+                    ]
+                messages.append(assistant_msg)
 
-                # Агент завершил работу
+                # Агент завершил
                 if finish_reason == "stop" or not msg.tool_calls:
+                    logger.info("Агент завершил работу")
                     break
 
-                # Выполняем tool calls через MCP
-                import json
+                # Выполняем tool calls
                 for tool_call in msg.tool_calls:
                     name = tool_call.function.name
                     args = json.loads(tool_call.function.arguments)
 
-                    logger.info(f"Вызов инструмента: {name}({args})")
+                    logger.info(f"Вызов: {name}")
 
                     try:
                         result = await session.call_tool(name, args)
                         result_text = result.content[0].text if result.content else "ok"
 
-                        # Извлекаем инфо о коммите
                         if name == "push_files":
                             commit_message = args.get("commit_message", commit_message)
                             files_changed += len(args.get("files", []))
 
-                        logger.info(f"Результат {name}: {result_text[:100]}...")
+                        logger.info(f"Результат {name}: {result_text[:150]}")
 
                     except Exception as e:
                         result_text = f"Ошибка: {str(e)}"
-                        logger.error(f"Ошибка вызова {name}: {e}")
+                        logger.error(f"Ошибка {name}: {e}")
 
                     messages.append({
                         "role": "tool",
@@ -147,8 +153,19 @@ async def run_agent(prompt: str) -> dict:
                         "content": result_text
                     })
 
+            if iteration >= MAX_ITERATIONS:
+                logger.warning("Достигнут лимит итераций")
+
             return {
                 "commit_message": commit_message,
                 "files_changed": files_changed,
                 "repo_url": f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
             }
+
+
+async def run_agent(prompt: str) -> dict:
+    """Запускает агента с таймаутом."""
+    try:
+        return await asyncio.wait_for(_run_agent_inner(prompt), timeout=AGENT_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise Exception(f"Агент не успел за {AGENT_TIMEOUT} секунд. Попробуй упростить задачу.")
